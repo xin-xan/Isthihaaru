@@ -6,9 +6,10 @@ import { loadImage } from "@/lib/image";
 import { renderPoster, textAreaLuminance, type PosterInput } from "@/lib/poster/render";
 import type { ThemeMode } from "@/lib/types";
 
-type Props = Omit<PosterInput, "width" | "height" | "scene" | "productPhoto" | "logo" | "theme"> & {
+type Props = Omit<PosterInput, "width" | "height" | "scene" | "productPhoto" | "logo" | "cutout" | "theme"> & {
   sceneUrl: string | null;
   photoUrl: string | null;
+  cutoutUrl: string | null;
   themeMode: ThemeMode;
   /** bump to re-render once web fonts finish loading */
   fontsVersion: number;
@@ -32,9 +33,10 @@ function useImage(src: string | null) {
 }
 
 export default function PosterPreview(props: Props) {
-  const { sceneUrl, photoUrl, themeMode, fontsVersion, canvasRef, onResolvedTheme, ...rest } = props;
+  const { sceneUrl, photoUrl, cutoutUrl, themeMode, fontsVersion, canvasRef, onResolvedTheme, ...rest } = props;
   const scene = useImage(sceneUrl);
   const photo = useImage(photoUrl);
+  const cutout = useImage(cutoutUrl);
   const logo = useImage(rest.profile.logo);
   const [canvas, setCanvas] = useState<HTMLCanvasElement | null>(null);
   const fmt = FORMATS[rest.format];
@@ -59,10 +61,10 @@ export default function PosterPreview(props: Props) {
 
   useEffect(() => {
     if (!canvas) return;
-    renderPoster(canvas, { ...rest, width: fmt.width, height: fmt.height, scene, productPhoto: photo, logo, theme });
+    renderPoster(canvas, { ...rest, width: fmt.width, height: fmt.height, scene, productPhoto: photo, logo, cutout, theme });
     // `rest` is rebuilt every render; its contents are what matter.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [canvas, scene, photo, logo, theme, fmt, fontsVersion, JSON.stringify(rest)]);
+  }, [canvas, scene, photo, logo, cutout, theme, fmt, fontsVersion, JSON.stringify(rest)]);
 
   return (
     <canvas

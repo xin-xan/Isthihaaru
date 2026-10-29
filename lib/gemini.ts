@@ -138,6 +138,7 @@ function wrapGeminiError(err: unknown): ApiError {
     return new ApiError(
       402,
       "This Gemini model isn't available on the free tier. Enable billing for your API key's project in Google AI Studio, then try again.",
+      "billing_required",
     );
   }
   if (/quota|429|RESOURCE_EXHAUSTED/i.test(msg)) return new ApiError(429, "AI usage limit reached. Please wait a moment and try again.");
@@ -205,7 +206,8 @@ Rules:
 - Write an original tagline; never reuse another brand's famous slogan.
 - Return two versions:
   "en": English.
-  "dv": natural, fluent Maldivian Dhivehi written in Thaana script (not Latin transliteration). Keep brand names in their original spelling. Keep the same icons.`;
+  "dv": natural, fluent Maldivian Dhivehi written in Thaana script (not Latin transliteration). Keep brand names in their original spelling. Keep the same icons.
+- "sceneIdea": in English, describe an empty photo set that would flatter this product (e.g. "a wet black slate surface with crushed ice and cool blue rim light"). Do not mention the product.`;
 
   const run = (model: string) =>
     ai.models.generateContent({
@@ -215,9 +217,17 @@ Rules:
         responseMimeType: "application/json",
         responseSchema: {
           type: Type.OBJECT,
-          properties: { en: copySchema, dv: copySchema },
-          required: ["en", "dv"],
-          propertyOrdering: ["en", "dv"],
+          properties: {
+            en: copySchema,
+            dv: copySchema,
+            sceneIdea: {
+              type: Type.STRING,
+              description:
+                "One sentence describing an empty advertising set that suits this product (surface, props, colours, light), without the product itself",
+            },
+          },
+          required: ["en", "dv", "sceneIdea"],
+          propertyOrdering: ["en", "dv", "sceneIdea"],
         },
         temperature: 0.8,
         // Short copy doesn't need deep reasoning; keeps the request well under serverless time limits.
@@ -234,7 +244,7 @@ Rules:
       res = await run(TEXT_FALLBACK_MODEL);
     }
     const parsed = JSON.parse(res.text ?? "{}") as Partial<CopyResponse>;
-    return { en: sanitizeCopy(parsed.en), dv: sanitizeCopy(parsed.dv) };
+    return { en: sanitizeCopy(parsed.en), dv: sanitizeCopy(parsed.dv), sceneIdea: clip(parsed.sceneIdea, 300) };
   } catch (err) {
     throw wrapGeminiError(err);
   }

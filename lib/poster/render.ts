@@ -20,6 +20,11 @@ export interface PosterInput {
   /** Original product photo, shown as a placeholder until a scene exists */
   productPhoto: HTMLImageElement | null;
   logo: HTMLImageElement | null;
+  /** Background-removed product, composited onto the scene in free (hybrid) mode */
+  cutout: HTMLImageElement | null;
+  /** true when `scene` is an empty background plate that the cut-out should be placed on */
+  hybrid: boolean;
+  placement: ProductPlacement;
   profile: BusinessProfile;
   copy: AdCopy;
   lang: Lang;
@@ -29,6 +34,13 @@ export interface PosterInput {
   scrim: boolean;
   price: PriceInfo;
   thaanaFamily: string;
+}
+
+export interface ProductPlacement {
+  /** size multiplier, 1 = default */
+  scale: number;
+  /** raises the product by this fraction of the poster height */
+  lift: number;
 }
 
 const THAANA_RE = /[ހ-޿]/;
@@ -171,6 +183,7 @@ export function renderPoster(canvas: HTMLCanvasElement, p: PosterInput) {
   drawBackground(ctx, p, W, H, left, u);
 
   if (p.scrim) drawScrim(ctx, W, H, left, story, dark);
+  if (p.cutout && (p.hybrid || !p.scene)) drawProduct(ctx, p, W, H, left, u);
 
   if (!dark) {
     ctx.shadowColor = "rgba(0,0,0,0.35)";
@@ -224,7 +237,7 @@ function drawBackground(ctx: CanvasRenderingContext2D, p: PosterInput, W: number
   g.addColorStop(1, "#e9e4da");
   ctx.fillStyle = g;
   ctx.fillRect(0, 0, W, H);
-  if (p.productPhoto) {
+  if (p.productPhoto && !p.cutout) {
     // Placeholder: original photo on the product side until the AI scene is ready.
     const boxW = p.format === "story" ? W * 0.7 : W * 0.42;
     const boxH = p.format === "story" ? H * 0.38 : H * 0.55;
@@ -242,6 +255,101 @@ function drawBackground(ctx: CanvasRenderingContext2D, p: PosterInput, W: number
     ctx.drawImage(img, bx + (boxW - w) / 2, by + (boxH - h) / 2, w, h);
     ctx.restore();
   }
+}
+
+// Where the product stands, per format, for text on the left (mirrored for the right).
+const PRODUCT_SLOT: Record<FormatId, { cx: number; base: number; h: number; maxW: number }> = {
+  portrait: { cx: 0.73, base: 0.8, h: 0.47, maxW: 0.4 },
+  square: { cx: 0.74, base: 0.82, h: 0.53, maxW: 0.4 },
+  landscape: { cx: 0.73, base: 0.84, h: 0.63, maxW: 0.38 },
+  story: { cx: 0.67, base: 0.83, h: 0.36, maxW: 0.56 },
+};
+
+const avgColorCache = new WeakMap<HTMLImageElement, string>();
+
+function averageColor(img: HTMLImageElement): string {
+  const cached = avgColorCache.get(img);
+  if (cached) return cached;
+  const c = document.createElement("canvas");
+  c.width = c.height = 8;
+  const x = c.getContext("2d", { willReadFrequently: true })!;
+  x.drawImage(img, 0, 0, 8, 8);
+  const d = x.getImageData(0, 0, 8, 8).data;
+  let r = 0;
+  let g = 0;
+  let b = 0;
+  for (let i = 0; i < d.length; i += 4) {
+    r += d[i];
+    g += d[i + 1];
+    b += d[i + 2];
+  }
+  const n = d.length / 4;
+  const color = `rgb(${Math.round(r / n)}, ${Math.round(g / n)}, ${Math.round(b / n)})`;
+  avgColorCache.set(img, color);
+  return color;
+}
+
+/** Stands the cut-out product on the scene with contact + drop shadows and a light colour match. */
+function drawProduct(ctx: CanvasRenderingContext2D, p: PosterInput, W: number, H: number, left: boolean, u: number) {
+  const img = p.cutout!;
+  const slot = PRODUCT_SLOT[p.format];
+  const scale = Math.min(1.6, Math.max(0.4, p.placement.scale));
+  const aspect = img.width / img.height;
+  let h = slot.h * H * scale;
+  let w = h * aspect;
+  const maxW = slot.maxW * W * scale;
+  if (w > maxW) {
+    w = maxW;
+    h = w / aspect;
+  }
+  const cx = (left ? slot.cx : 1 - slot.cx) * W;
+  const baseY = (slot.base - p.placement.lift) * H;
+  const x = cx - w / 2;
+  const y = baseY - h;
+
+  // Product layer with ambient occlusion at the base and a hint of the scene's colour.
+  const layer = document.createElement("canvas");
+  layer.width = Math.max(1, Math.round(w));
+  layer.height = Math.max(1, Math.round(h));
+  const lx = layer.getContext("2d")!;
+  lx.drawImage(img, 0, 0, layer.width, layer.height);
+  lx.globalCompositeOperation = "source-atop";
+  if (p.scene) {
+    lx.globalAlpha = 0.1;
+    lx.fillStyle = averageColor(p.scene);
+    lx.fillRect(0, 0, layer.width, layer.height);
+    lx.globalAlpha = 1;
+  }
+  const ao = lx.createLinearGradient(0, layer.height, 0, layer.height * 0.88);
+  ao.addColorStop(0, "rgba(0,0,0,0.28)");
+  ao.addColorStop(1, "rgba(0,0,0,0)");
+  lx.fillStyle = ao;
+  lx.fillRect(0, layer.height * 0.88, layer.width, layer.height * 0.12);
+
+  // Contact shadow
+  const rx = w * 0.58;
+  const ry = Math.max(6 * u, w * 0.075);
+  ctx.save();
+  ctx.translate(cx, baseY - ry * 0.15);
+  ctx.scale(1, ry / rx);
+  const cs = ctx.createRadialGradient(0, 0, 0, 0, 0, rx);
+  cs.addColorStop(0, "rgba(0,0,0,0.5)");
+  cs.addColorStop(0.55, "rgba(0,0,0,0.2)");
+  cs.addColorStop(1, "rgba(0,0,0,0)");
+  ctx.fillStyle = cs;
+  ctx.beginPath();
+  ctx.arc(0, 0, rx, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+
+  // Soft drop shadow cast away from the text side (light comes from that side)
+  ctx.save();
+  ctx.shadowColor = "rgba(0,0,0,0.3)";
+  ctx.shadowBlur = 46 * u;
+  ctx.shadowOffsetX = (left ? 1 : -1) * 22 * u;
+  ctx.shadowOffsetY = 16 * u;
+  ctx.drawImage(layer, x, y, w, h);
+  ctx.restore();
 }
 
 export function drawCover(ctx: CanvasRenderingContext2D, img: HTMLImageElement, x: number, y: number, w: number, h: number) {
@@ -642,13 +750,14 @@ function column(
   block(copy.subtitle, 700, 68, 32, 2, 1.12, pal.subtitle, 26);
   block(copy.tagline, 400, 40, 24, 3, 1.28, pal.body, 30);
 
-  // Divider
-  if (draw) {
+  // Divider (only once there is headline text above it)
+  const hasText = !!(copy.name.trim() || copy.subtitle.trim() || copy.tagline.trim());
+  if (draw && hasText) {
     ctx.fillStyle = accent;
     const bw = 100 * s;
     ctx.fillRect(align === "left" ? anchor : anchor - bw, y, bw, 6 * s);
   }
-  y += 6 * s + 34 * s;
+  if (hasText) y += 6 * s + 34 * s;
 
   // Feature rows
   const feats = copy.features.filter((f) => f.text.trim());

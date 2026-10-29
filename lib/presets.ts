@@ -19,7 +19,7 @@ export const SCENE_PRESETS: ScenePreset[] = [
     label: "Natural light",
     emoji: "🌿",
     scene:
-      "a bright, airy scene with a warm cream wall, the product standing on a natural stone pedestal on a light marble table, soft sunlight casting gentle leaf shadows, blurred green tropical plant leaves in the foreground corners",
+      "a bright, airy scene with a warm cream wall, a natural stone pedestal on a light marble table, soft sunlight casting gentle leaf shadows, blurred green tropical plant leaves in the foreground corners",
   },
   {
     id: "studio",
@@ -47,14 +47,14 @@ export const SCENE_PRESETS: ScenePreset[] = [
     label: "Kitchen",
     emoji: "🍳",
     scene:
-      "a bright modern kitchen counter with fresh, relevant ingredients arranged tastefully around the product, morning window light",
+      "a bright modern kitchen counter with a few fresh ingredients arranged tastefully at the edges, morning window light",
   },
   {
     id: "chilled",
     label: "Ice cold",
     emoji: "🧊",
     scene:
-      "a refreshing ice-cold scene with crushed ice and ice cubes, water droplets and condensation on the product, splashes, cool lighting",
+      "a refreshing ice-cold scene with crushed ice, scattered ice cubes, water droplets and splashes, cool lighting",
   },
   {
     id: "beauty",

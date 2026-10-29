@@ -3,15 +3,29 @@
 Turn a phone photo of a product into a professional social-media advertisement post in seconds.
 
 1. **Snap or upload** a product photo. Any background is fine.
-2. **AI re-renders** the product into a realistic advertising scene. The scene is automatic, or you can pick a style (Natural light, Studio, Luxury, Beach, Kitchen, Ice cold, Beauty, Ramadan / Eid) or describe your own.
+2. **The product goes into a realistic advertising scene**, using either of two engines (see below). The scene is automatic, or you can pick a style (Natural light, Studio, Luxury, Beach, Kitchen, Ice cold, Beauty, Ramadan / Eid) or describe your own.
 3. **AI writes the copy** in English and Dhivehi (Thaana): category, name, subtitle, tagline and three features with icons. Everything is editable.
 4. **Your business details** (logo, name, slogan, colours, phone/WhatsApp/Viber, socials, address, taglines) are added automatically. They are saved in the browser, with no login.
 5. **Download or share** as a PNG in Square 1:1, Portrait 4:5, Story 9:16 or Landscape 16:9.
 
 The layout follows [`samples/sample-ad.png`](samples/sample-ad.png).
 
+## Scene engines
+
+| | **Free** | **Premium** |
+| --- | --- | --- |
+| How | The product is cut out **in the browser** (U²-Net model, `public/models/u2netp.onnx`). Cloudflare Workers AI (FLUX.1 schnell) makes an empty background, and the canvas stands the real product on it with contact and drop shadows. | A Gemini image model re-renders the whole photo into the scene. |
+| Product label | Pixel-perfect, exactly as photographed | Usually faithful; can drift slightly |
+| Lighting realism | Good (synthetic shadows) | Best (real reflections and relighting) |
+| Cost | Free: 10,000 Cloudflare neurons/day, roughly 100+ backgrounds | A few cents per image; needs Gemini billing |
+| Needs | `CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_API_TOKEN` | `GEMINI_API_KEY` with billing |
+
+Users switch engines in step 2. If Premium is chosen and the key has no billing, the app falls back to Free automatically. In Free mode, **Product size** and **Product height** sliders appear under Layout. One background works for every post size.
+
 ## How it works
 
+- `lib/bgremove.ts`: runs the cut-out model with onnxruntime-web. The runtime is copied to `public/ort` by `npm install` (`postinstall`).
+- `app/api/background`: asks Cloudflare Workers AI for an empty set to place the product on.
 - `app/api/scene`: sends the photo to a **Gemini image model** with a prompt that keeps the product identical, removes the background, builds the chosen scene and leaves calm space on the text side. No text is baked into the image.
 - `app/api/copy`: asks a **Gemini text model** for structured JSON copy in English and Dhivehi.
 - `lib/poster/render.ts`: draws the final poster on a `<canvas>`. Text is laid out as sharp vector text with real fonts (Montserrat, Kaushan Script, Noto Sans Thaana) and correct right-to-left Thaana shaping. Light or dark text is picked automatically from the scene's brightness. Dhivehi posters move the text block to the right by default.
@@ -25,7 +39,7 @@ cp .env.example .env.local   # then add your GEMINI_API_KEY
 npm run dev                  # http://localhost:3000
 ```
 
-Get a key at <https://aistudio.google.com/apikey>. Image models have no free-tier quota, so **billing must be enabled** on the key's project for scene generation to work.
+Get a key at <https://aistudio.google.com/apikey>. Gemini image models have no free-tier quota, so Premium scenes need **billing enabled** on the key's project. Free mode needs a free Cloudflare account instead.
 
 ## Deploy to Vercel
 
@@ -34,7 +48,10 @@ Get a key at <https://aistudio.google.com/apikey>. Image models have no free-tie
 
 | Variable | Required | Default | Notes |
 | --- | --- | --- | --- |
-| `GEMINI_API_KEY` | yes | – | Google AI Studio key |
+| `GEMINI_API_KEY` | yes | – | Google AI Studio key. Ad copy works on the free tier. |
+| `CLOUDFLARE_ACCOUNT_ID` | for Free mode | – | Cloudflare dashboard, Workers AI page |
+| `CLOUDFLARE_API_TOKEN` | for Free mode | – | API token from the "Workers AI" template |
+| `CLOUDFLARE_IMAGE_MODEL` | no | `@cf/black-forest-labs/flux-1-schnell` | |
 | `GEMINI_IMAGE_MODEL` | no | `gemini-3.1-flash-image` | `gemini-3-pro-image` for higher quality, `gemini-3.1-flash-lite-image` for lower cost |
 | `GEMINI_TEXT_MODEL` | no | `gemini-3.5-flash` | |
 | `APP_ACCESS_CODE` | no | – | If set, users must enter this code before generating. This stops strangers from spending your API credits. |
@@ -43,7 +60,7 @@ API routes allow up to 60 s (`maxDuration`), which suits image generation on Ver
 
 ## Cost
 
-Each **Create** makes one image call plus one text call. Each **Recreate** or **Rewrite** makes one more call. Check current Gemini pricing; for flash image models it is typically a few US cents per image.
+In Free mode the only paid-type call is the Cloudflare background, which stays within the free daily allowance for normal use; the cut-out runs on the user's device. In Premium mode each **Create** makes one image call plus one text call. Each **Recreate** or **Rewrite** makes one more call. Check current Gemini pricing; for flash image models it is typically a few US cents per image.
 
 ## Notes and ideas for later
 

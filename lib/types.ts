@@ -103,4 +103,8 @@ export interface PriceInfo {
 export interface CopyResponse {
   en: AdCopy;
   dv: AdCopy;
+  /** English description of an empty set that suits the product (used by the free scene engine) */
+  sceneIdea?: string;
 }
+
+export type SceneEngine = "free" | "premium";

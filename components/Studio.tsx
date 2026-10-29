@@ -7,8 +7,9 @@ import PosterPreview from "./PosterPreview";
 import ProfileDialog from "./ProfileDialog";
 import { Chip, Field, Section, Segmented, Spinner, TextArea, TextInput, Toggle } from "./ui";
 import { FORMATS, FORMAT_LIST } from "@/lib/formats";
+import { removeBackground } from "@/lib/bgremove";
 import { fileToDataUrl } from "@/lib/image";
-import { DEFAULT_THAANA } from "@/lib/poster/render";
+import { DEFAULT_THAANA, type ProductPlacement } from "@/lib/poster/render";
 import { SCENE_PRESETS } from "@/lib/presets";
 import {
   DEFAULT_PROFILE,
@@ -19,7 +20,7 @@ import {
   saveThaanaFont,
   type StoredFont,
 } from "@/lib/storage";
-import type { AdCopy, BusinessProfile, CopyResponse, FormatId, Lang, PriceInfo, TextSide, ThemeMode } from "@/lib/types";
+import type { AdCopy, BusinessProfile, CopyResponse, FormatId, Lang, PriceInfo, SceneEngine, TextSide, ThemeMode } from "@/lib/types";
 
 const CUSTOM_THAANA = "IsthihaaruThaana";
 
@@ -70,7 +71,15 @@ export default function Studio() {
   const [scrim, setScrim] = useState(true);
   const [price, setPrice] = useState<PriceInfo>({ show: false, currency: "MVR", price: "", oldPrice: "" });
 
+  const [engines, setEngines] = useState({ premium: true, free: true });
+  const [engine, setEngine] = useState<SceneEngine>("free");
+  const [notice, setNotice] = useState<string | null>(null);
   const [scenes, setScenes] = useState<Partial<Record<FormatId, SceneEntry>>>({});
+  // Free mode: one empty background plate (works for every size) + the cut-out product placed on it.
+  const [freeBg, setFreeBg] = useState<SceneEntry | null>(null);
+  const [cutout, setCutout] = useState<{ photo: string; url: string } | null>(null);
+  const [placement, setPlacement] = useState<ProductPlacement>({ scale: 1, lift: 0 });
+  const [sceneStatus, setSceneStatus] = useState("");
   const [copy, setCopy] = useState<CopyResponse>({ en: emptyCopy(), dv: emptyCopy() });
   const [hasCopy, setHasCopy] = useState(false);
 
@@ -83,6 +92,7 @@ export default function Studio() {
 
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const editorRef = useRef<HTMLDivElement | null>(null);
+  const copyInFlight = useRef<Promise<CopyResponse | null> | null>(null);
 
   // ---------- boot: profile, access code, fonts ----------
   const applyFont = useCallback(async (font: StoredFont | null): Promise<string | null> => {
@@ -130,6 +140,14 @@ export default function Studio() {
       "700 20px 'Noto Sans Thaana'",
     ];
     Promise.allSettled(specs.map((s) => document.fonts.load(s, "Aa ދިވެހި"))).then(() => setFontsVersion((v) => v + 1));
+
+    fetch("/api/config")
+      .then((r) => r.json())
+      .then((c: { premium: boolean; free: boolean }) => {
+        setEngines(c);
+        if (!c.free && c.premium) setEngine("premium");
+      })
+      .catch(() => {});
   }, [applyFont]);
 
   // ---------- API ----------
@@ -152,6 +170,7 @@ export default function Studio() {
   async function makeScene(target: FormatId = format) {
     if (!photo) return;
     setBusyScene(true);
+    setSceneStatus("Creating your scene… (10–30 s)");
     setError(null);
     try {
       const { dataUrl } = await post<{ dataUrl: string }>("/api/scene", {
@@ -164,22 +183,67 @@ export default function Studio() {
       });
       setScenes((s) => ({ ...s, [target]: { url: dataUrl, side: textSide } }));
     } catch (e) {
+      if (e instanceof RequestError && e.code === "billing_required" && engines.free) {
+        setEngine("free");
+        setNotice("Premium scenes need Gemini billing, so we switched to Free mode.");
+        setBusyScene(false);
+        return makeFreeScene();
+      }
       handleError(e);
     } finally {
       setBusyScene(false);
     }
   }
 
-  async function makeCopy() {
+  async function ensureCutout(src: string): Promise<string> {
+    if (cutout?.photo === src) return cutout.url;
+    const url = await removeBackground(src);
+    setCutout({ photo: src, url });
+    return url;
+  }
+
+  async function makeFreeScene() {
     if (!photo) return;
+    setBusyScene(true);
+    setSceneStatus("Cutting out your product…");
+    setError(null);
+    try {
+      const [, c] = await Promise.all([ensureCutout(photo), hasCopy ? Promise.resolve(copy) : makeCopy()]);
+      setSceneStatus("Creating the background…");
+      const { dataUrl } = await post<{ dataUrl: string }>("/api/background", {
+        format,
+        presetId,
+        customScene,
+        textSide,
+        sceneIdea: c?.sceneIdea ?? "",
+      });
+      setFreeBg({ url: dataUrl, side: textSide });
+    } catch (e) {
+      handleError(e);
+    } finally {
+      setBusyScene(false);
+    }
+  }
+
+  function makeCopy(): Promise<CopyResponse | null> {
+    copyInFlight.current ??= requestCopy().finally(() => {
+      copyInFlight.current = null;
+    });
+    return copyInFlight.current;
+  }
+
+  async function requestCopy(): Promise<CopyResponse | null> {
+    if (!photo) return null;
     setBusyCopy(true);
     setError(null);
     try {
       const res = await post<CopyResponse>("/api/copy", { image: photo, productName, details, businessName: profile.name });
       setCopy(res);
       setHasCopy(true);
+      return res;
     } catch (e) {
       handleError(e);
+      return null;
     } finally {
       setBusyCopy(false);
     }
@@ -187,15 +251,27 @@ export default function Studio() {
 
   async function createAd() {
     editorRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
-    await Promise.all([makeScene(), hasCopy ? Promise.resolve() : makeCopy()]);
+    setNotice(null);
+    if (engine === "free") await makeFreeScene();
+    else await Promise.all([makeScene(), hasCopy ? Promise.resolve() : makeCopy()]);
   }
 
   async function onPhoto(file: File | undefined) {
     if (!file) return;
     setError(null);
     try {
-      setPhoto(await fileToDataUrl(file, { maxDim: 1536, type: "image/jpeg", quality: 0.9 }));
+      const url = await fileToDataUrl(file, { maxDim: 1536, type: "image/jpeg", quality: 0.9 });
+      setPhoto(url);
       setScenes({});
+      setFreeBg(null);
+      setCutout(null);
+      setPlacement({ scale: 1, lift: 0 });
+      // Cut the product out straight away in free mode so the preview shows it while the user picks a scene.
+      if (engine === "free") {
+        removeBackground(url)
+          .then((cut) => setCutout({ photo: url, url: cut }))
+          .catch(() => {});
+      }
       setHasCopy(false);
       setCopy({ en: emptyCopy(), dv: emptyCopy() });
     } catch (e) {
@@ -235,9 +311,11 @@ export default function Studio() {
   }
 
   // ---------- derived ----------
-  const sceneEntry = scenes[format] ?? Object.values(scenes)[0] ?? null;
-  const sceneForOtherSize = !!sceneEntry && !scenes[format];
-  const sceneSideMismatch = !!scenes[format] && scenes[format]!.side !== textSide;
+  const free = engine === "free";
+  const sceneEntry = free ? freeBg : (scenes[format] ?? Object.values(scenes)[0] ?? null);
+  const sceneForOtherSize = !free && !!sceneEntry && !scenes[format];
+  const sceneSideMismatch = !free && !!scenes[format] && scenes[format]!.side !== textSide;
+  const cutoutUrl = free && cutout?.photo === photo ? cutout.url : null;
   const busy = busyScene || busyCopy;
   const started = !!sceneEntry || hasCopy || busy;
 
@@ -283,6 +361,9 @@ export default function Studio() {
               canvasRef={canvasRef}
               sceneUrl={sceneEntry?.url ?? null}
               photoUrl={photo}
+              cutoutUrl={cutoutUrl}
+              hybrid={free}
+              placement={placement}
               themeMode={themeMode}
               fontsVersion={fontsVersion}
               format={format}
@@ -298,7 +379,7 @@ export default function Studio() {
               <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 rounded-2xl bg-white/60 backdrop-blur-sm">
                 <Spinner className="size-8 text-brand-700" />
                 <p className="text-sm font-semibold text-brand-900">
-                  {busyScene ? "Creating your scene… (10–30 s)" : "Writing your ad copy…"}
+                  {busyScene ? sceneStatus : "Writing your ad copy…"}
                 </p>
               </div>
             )}
@@ -339,6 +420,7 @@ export default function Studio() {
 
         {/* Controls */}
         <div className="space-y-4">
+          {notice && <div className="rounded-xl bg-sky-50 px-4 py-3 text-sm text-sky-900 ring-1 ring-sky-200">{notice}</div>}
           {error && (
             <div className="rounded-xl bg-red-50 px-4 py-3 text-sm text-red-800 ring-1 ring-red-200">
               <p>{error}</p>
@@ -397,6 +479,35 @@ export default function Studio() {
           </Section>
 
           <Section step={2} title="Scene & size">
+            <div className="mb-3">
+              <Segmented
+                value={engine}
+                onChange={(v) => {
+                  setEngine(v);
+                  setNotice(null);
+                  if (v === "free" && photo && cutout?.photo !== photo) {
+                    removeBackground(photo)
+                      .then((cut) => setCutout({ photo, url: cut }))
+                      .catch(() => {});
+                  }
+                }}
+                options={[
+                  { value: "free", label: "Free" },
+                  { value: "premium", label: "Premium" },
+                ]}
+              />
+              <p className="mt-1.5 text-xs text-neutral-500">
+                {free
+                  ? "Your product is cut out on this device and placed on an AI-made background. The label stays exactly as photographed."
+                  : "Gemini re-renders the whole photo with matching light and reflections. Needs Gemini billing."}
+              </p>
+              {free && !engines.free && (
+                <p className="mt-1.5 text-xs font-semibold text-amber-700">Free mode isn&apos;t set up on the server yet (Cloudflare keys missing).</p>
+              )}
+              {!free && !engines.premium && (
+                <p className="mt-1.5 text-xs font-semibold text-amber-700">Premium mode isn&apos;t set up on the server yet (Gemini key missing).</p>
+              )}
+            </div>
             <div className="flex flex-wrap gap-2">
               {SCENE_PRESETS.map((p) => (
                 <Chip key={p.id} active={presetId === p.id && !customScene.trim()} onClick={() => (setPresetId(p.id), setCustomScene(""))}>
@@ -434,7 +545,7 @@ export default function Studio() {
               className="mt-4 flex w-full items-center justify-center gap-2 rounded-xl bg-brand-700 py-3.5 text-base font-bold text-white shadow-lg shadow-brand-700/20 transition hover:bg-brand-900 disabled:cursor-not-allowed disabled:opacity-50"
             >
               {busy ? <Spinner className="size-5" /> : <Wand2 className="size-5" />}
-              {sceneEntry ? "Create new scene" : "Create my ad"}
+              {sceneEntry ? (free ? "New background" : "Create new scene") : "Create my ad"}
             </button>
           </Section>
 
@@ -506,6 +617,32 @@ export default function Studio() {
                 />
               </Field>
               <Toggle checked={scrim} onChange={setScrim} label="Soft backdrop behind text" />
+              {cutoutUrl && (
+                <div className="space-y-3 rounded-xl bg-neutral-50 p-3">
+                  <Field label="Product size">
+                    <input
+                      type="range"
+                      min={0.6}
+                      max={1.4}
+                      step={0.02}
+                      value={placement.scale}
+                      onChange={(e) => setPlacement((p) => ({ ...p, scale: Number(e.target.value) }))}
+                      className="w-full accent-brand-600"
+                    />
+                  </Field>
+                  <Field label="Product height">
+                    <input
+                      type="range"
+                      min={-0.08}
+                      max={0.3}
+                      step={0.005}
+                      value={placement.lift}
+                      onChange={(e) => setPlacement((p) => ({ ...p, lift: Number(e.target.value) }))}
+                      className="w-full accent-brand-600"
+                    />
+                  </Field>
+                </div>
+              )}
               <button type="button" onClick={() => setProfileOpen(true)} className="text-sm font-semibold text-brand-700">
                 Edit business details, colours & logo →
               </button>
