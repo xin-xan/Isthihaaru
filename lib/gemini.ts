@@ -1,10 +1,12 @@
 import "server-only";
-import { GoogleGenAI, Type } from "@google/genai";
+import { GoogleGenAI, ThinkingLevel, Type } from "@google/genai";
 import { findPreset } from "./presets";
 import { ICON_KEYS, type AdCopy, type CopyResponse, type FormatId, type IconKey, type TextSide } from "./types";
 
-const IMAGE_MODEL = process.env.GEMINI_IMAGE_MODEL || "gemini-2.5-flash-image";
-const TEXT_MODEL = process.env.GEMINI_TEXT_MODEL || "gemini-2.5-flash";
+const IMAGE_MODEL = process.env.GEMINI_IMAGE_MODEL || "gemini-3.1-flash-image";
+const TEXT_MODEL = process.env.GEMINI_TEXT_MODEL || "gemini-3.5-flash";
+/** Tried once when the main text model is overloaded (503). */
+const TEXT_FALLBACK_MODEL = "gemini-flash-latest";
 
 export class ApiError extends Error {
   constructor(
@@ -19,7 +21,8 @@ export class ApiError extends Error {
 function client(): GoogleGenAI {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) throw new ApiError(500, "Server is missing GEMINI_API_KEY. Add it to your environment variables.");
-  return new GoogleGenAI({ apiKey });
+  // Keep retries short: the SDK default (5 attempts, up to 60 s apart) outlasts serverless time limits.
+  return new GoogleGenAI({ apiKey, httpOptions: { retryOptions: { attempts: 2, initialDelay: 1, maxDelay: 3 } } });
 }
 
 /** Rejects the request when APP_ACCESS_CODE is configured and the header doesn't match. */
@@ -131,7 +134,17 @@ function wrapGeminiError(err: unknown): ApiError {
   if (err instanceof ApiError) return err;
   const msg = err instanceof Error ? err.message : String(err);
   if (/API key/i.test(msg)) return new ApiError(500, "The Gemini API key is invalid.");
+  if (/free_tier/i.test(msg) && /limit: 0\b/.test(msg)) {
+    return new ApiError(
+      402,
+      "This Gemini model isn't available on the free tier. Enable billing for your API key's project in Google AI Studio, then try again.",
+    );
+  }
   if (/quota|429|RESOURCE_EXHAUSTED/i.test(msg)) return new ApiError(429, "AI usage limit reached. Please wait a moment and try again.");
+  if (/no longer available|not found|404/i.test(msg) && /model/i.test(msg)) {
+    console.error("Gemini model error:", msg);
+    return new ApiError(502, "The configured Gemini model isn't available. Update GEMINI_IMAGE_MODEL / GEMINI_TEXT_MODEL.");
+  }
   console.error("Gemini error:", msg);
   return new ApiError(502, "The AI service failed. Please try again.");
 }
@@ -189,13 +202,14 @@ Rules:
 - "tagline" is a memorable 2-6 word slogan; you may split it into two short lines with \\n (e.g. "More Energy.\\nMore You.").
 - Exactly 3 features: real, believable benefits of this kind of product. Pick the best matching icon for each.
 - Never invent prices, discounts, medical claims or certifications.
+- Write an original tagline; never reuse another brand's famous slogan.
 - Return two versions:
   "en": English.
   "dv": natural, fluent Maldivian Dhivehi written in Thaana script (not Latin transliteration). Keep brand names in their original spelling. Keep the same icons.`;
 
-  try {
-    const res = await ai.models.generateContent({
-      model: TEXT_MODEL,
+  const run = (model: string) =>
+    ai.models.generateContent({
+      model,
       contents: [{ role: "user", parts: [{ inlineData: r.image }, { text: prompt }] }],
       config: {
         responseMimeType: "application/json",
@@ -206,8 +220,19 @@ Rules:
           propertyOrdering: ["en", "dv"],
         },
         temperature: 0.8,
+        // Short copy doesn't need deep reasoning; keeps the request well under serverless time limits.
+        thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
       },
     });
+
+  try {
+    let res;
+    try {
+      res = await run(TEXT_MODEL);
+    } catch (err) {
+      if (TEXT_MODEL === TEXT_FALLBACK_MODEL || !/503|UNAVAILABLE|overloaded/i.test(String(err))) throw err;
+      res = await run(TEXT_FALLBACK_MODEL);
+    }
     const parsed = JSON.parse(res.text ?? "{}") as Partial<CopyResponse>;
     return { en: sanitizeCopy(parsed.en), dv: sanitizeCopy(parsed.dv) };
   } catch (err) {

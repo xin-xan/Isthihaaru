@@ -25,7 +25,7 @@ cp .env.example .env.local   # then add your GEMINI_API_KEY
 npm run dev                  # http://localhost:3000
 ```
 
-Get a key at <https://aistudio.google.com/apikey>.
+Get a key at <https://aistudio.google.com/apikey>. Image models have no free-tier quota, so **billing must be enabled** on the key's project for scene generation to work.
 
 ## Deploy to Vercel
 
@@ -35,8 +35,8 @@ Get a key at <https://aistudio.google.com/apikey>.
 | Variable | Required | Default | Notes |
 | --- | --- | --- | --- |
 | `GEMINI_API_KEY` | yes | – | Google AI Studio key |
-| `GEMINI_IMAGE_MODEL` | no | `gemini-2.5-flash-image` | Try `gemini-3.1-flash-image-preview` or `gemini-3-pro-image-preview` for higher quality |
-| `GEMINI_TEXT_MODEL` | no | `gemini-2.5-flash` | |
+| `GEMINI_IMAGE_MODEL` | no | `gemini-3.1-flash-image` | `gemini-3-pro-image` for higher quality, `gemini-3.1-flash-lite-image` for lower cost |
+| `GEMINI_TEXT_MODEL` | no | `gemini-3.5-flash` | |
 | `APP_ACCESS_CODE` | no | – | If set, users must enter this code before generating. This stops strangers from spending your API credits. |
 
 API routes allow up to 60 s (`maxDuration`), which suits image generation on Vercel's free plan.
