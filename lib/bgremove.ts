@@ -4,6 +4,7 @@
  * Everything runs on the user's device, so it costs nothing per photo.
  */
 import { SEGMENT_ASSETS } from "./segment/assets";
+import { plainBackgroundAlpha } from "./segment/plain";
 import type { WorkerResponse } from "./segment/types";
 
 export type CutoutStage = "quick" | "best";
@@ -17,7 +18,7 @@ export interface CutoutHandlers {
 
 let worker: Worker | null = null;
 let jobId = 0;
-const jobs = new Map<number, { photo: string; handlers: CutoutHandlers; gotQuick: boolean }>();
+const jobs = new Map<number, { photo: string; handlers: CutoutHandlers; gotQuick: boolean; plain: boolean }>();
 
 function getWorker(): Worker {
   if (worker) return worker;
@@ -33,6 +34,8 @@ function getWorker(): Worker {
       job.handlers.onError(msg.message, job.gotQuick ? "best" : "quick");
       jobs.delete(msg.id);
     } else {
+      // A plain-background cut-out is usually cleaner than the quick model; only the best pass replaces it.
+      if (msg.stage === "quick" && job.plain) return;
       if (msg.stage === "quick") job.gotQuick = true;
       compose(job.photo, msg.width, msg.height, msg.alpha)
         .then((url) => job.handlers.onResult(msg.stage, url))
@@ -42,7 +45,7 @@ function getWorker(): Worker {
   };
   worker.onerror = (e) => {
     for (const [id, job] of jobs) {
-      job.handlers.onError(e.message || "Background removal stopped unexpectedly.", job.gotQuick ? "best" : "quick");
+      job.handlers.onError(`The cut-out engine stopped (${e.message || "worker failed to load"}).`, job.gotQuick ? "best" : "quick");
       jobs.delete(id);
     }
     worker?.terminate();
@@ -93,15 +96,46 @@ async function compose(photoUrl: string, W: number, H: number, alpha: Uint8Clamp
   return t.toDataURL("image/png");
 }
 
+/** Instant cut-out for photos on a plain background; no model needed, so it works everywhere. */
+async function plainCutout(photoUrl: string): Promise<string | null> {
+  const img = await loadImage(photoUrl);
+  const c = document.createElement("canvas");
+  c.width = img.naturalWidth;
+  c.height = img.naturalHeight;
+  const x = c.getContext("2d", { willReadFrequently: true })!;
+  x.drawImage(img, 0, 0);
+  const alpha = plainBackgroundAlpha(x.getImageData(0, 0, c.width, c.height).data, c.width, c.height);
+  return alpha ? compose(photoUrl, c.width, c.height, alpha) : null;
+}
+
 /** Starts a cut-out; results arrive through the handlers. Starting another cancels this one. */
 export async function cutOutProduct(photoUrl: string, handlers: CutoutHandlers) {
   const id = ++jobId;
   jobs.clear();
-  jobs.set(id, { photo: photoUrl, handlers, gotQuick: false });
+  const job = { photo: photoUrl, handlers, gotQuick: false, plain: false };
+  jobs.set(id, job);
+
+  try {
+    const plain = await plainCutout(photoUrl);
+    if (id !== jobId) return;
+    if (plain) {
+      job.plain = job.gotQuick = true;
+      handlers.onResult("quick", plain);
+    }
+  } catch (err) {
+    console.error("plain background removal failed", err);
+  }
+  if (job.plain && !handlers.best) {
+    jobs.delete(id);
+    return;
+  }
+
   try {
     const blob = await (await fetch(photoUrl)).blob();
     getWorker().postMessage({ type: "segment", id, blob, best: handlers.best });
   } catch (err) {
-    handlers.onError(err instanceof Error ? err.message : "Couldn't start background removal.", "quick");
+    const message = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
+    handlers.onError(`The cut-out engine couldn't start (${message}).`, job.gotQuick ? "best" : "quick");
+    jobs.delete(id);
   }
 }

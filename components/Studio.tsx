@@ -204,10 +204,18 @@ export default function Studio() {
         onError(message, stage) {
           console.error(message);
           setImproving(false);
-          if (stage === "best") return; // keep the quick result
+          if (stage === "best") {
+            // Keep the quick result; say once why the cleaner version didn't arrive.
+            setNotice(`The best-quality cut-out isn't available on this device, so the quick one is used. Details: ${message}`);
+            return;
+          }
           setCutting(false);
           // Keep going with the photo as it is rather than blocking the whole poster.
-          setNotice(`${message.startsWith("Couldn't find") ? message : "Couldn't remove the photo's background on this device."} The photo is used as it is for now.`);
+          setNotice(
+            message.startsWith("Couldn't find")
+              ? `${message} The photo is used as it is for now.`
+              : `Couldn't remove this photo's background here, so it's used as it is. A photo on a plain, even background works on every phone. Details: ${message}`,
+          );
           setCutout({ photo: src, url: src, stage: "quick" });
           resolve(src);
         },

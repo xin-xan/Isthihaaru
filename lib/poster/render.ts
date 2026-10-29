@@ -314,12 +314,19 @@ function productRect(p: PosterInput, W: number, H: number, left: boolean): Produ
   const aspect = p.cutout ? p.cutout.width / p.cutout.height : 0.55;
   let h = slot.h * H * scale;
   let w = h * aspect;
-  const maxW = slot.maxW * W * scale;
+  // Wide packs (biscuits, boxes) get more room than tall bottles and cans.
+  const maxW = slot.maxW * W * scale * (aspect > 1.2 ? 1.35 : 1);
   if (w > maxW) {
     w = maxW;
     h = w / aspect;
   }
-  return { cx: (left ? slot.cx : 1 - slot.cx) * W, baseY: (slot.base - p.placement.lift) * H, w, h };
+  // Keep a wide product inside the frame on its side.
+  // Keep a wide product inside the frame and clear of the corner swoosh.
+  const wide = aspect > 1.2;
+  const edge = W * (wide ? 0.94 : 0.97);
+  const cx = Math.min((left ? slot.cx : 1 - slot.cx) * W, left ? edge - w / 2 : W);
+  const base = slot.base - p.placement.lift - (wide ? 0.06 : 0);
+  return { cx: left ? cx : Math.max(cx, W - edge + w / 2), baseY: base * H, w, h };
 }
 
 function drawProduct(ctx: CanvasRenderingContext2D, p: PosterInput, W: number, H: number, left: boolean, u: number) {
