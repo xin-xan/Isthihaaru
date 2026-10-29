@@ -10,6 +10,18 @@ Turn a phone photo of a product into a professional social-media advertisement p
 
 The layout follows [`samples/sample-ad.png`](samples/sample-ad.png).
 
+## Works with no API keys
+
+By default the app needs **no API keys and no server**:
+
+- **Background removal** runs on the phone (U²-Net model).
+- **Scenes** come from 12 built-in canvas-drawn sets: Natural light, Studio, Brand colours, Pastel, Luxury, Beach, Ice cold, Wooden table, Tropical green, Sunset, Ramadan / Eid and Clean white. Users can also upload their own background photo. The pedestal is always drawn under the product.
+- **Text** comes from ready-made English and Dhivehi lines for 11 product categories, with "Try other wording" to cycle through them. Everything stays editable.
+
+`npm run build:static` writes this version to `dist/`: one HTML page plus the model, the WebAssembly runtime and an example image. It can be hosted on any static host (GitHub Pages, Netlify, Cloudflare Pages).
+
+The AI engines below are optional extras. They appear automatically when the Next.js server has the keys.
+
 ## Scene engines
 
 | | **Free** | **Premium** |

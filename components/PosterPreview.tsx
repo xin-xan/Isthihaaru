@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useState, type Ref } from "react";
 import { FORMATS } from "@/lib/formats";
 import { loadImage } from "@/lib/image";
+import { findBackdrop } from "@/lib/poster/backdrops";
 import { renderPoster, textAreaLuminance, type PosterInput } from "@/lib/poster/render";
 import type { ThemeMode } from "@/lib/types";
 
@@ -50,10 +51,12 @@ export default function PosterPreview(props: Props) {
   );
 
   const luminance = useMemo(
-    () => (scene ? textAreaLuminance(scene, rest.format, rest.textSide, fmt.width, fmt.height) : 1),
-    [scene, rest.format, rest.textSide, fmt],
+    () => (scene && !rest.backdrop ? textAreaLuminance(scene, rest.format, rest.textSide, fmt.width, fmt.height) : 1),
+    [scene, rest.backdrop, rest.format, rest.textSide, fmt],
   );
-  const theme: "dark" | "light" = themeMode !== "auto" ? themeMode : luminance < 0.48 ? "light" : "dark";
+  const backdrop = findBackdrop(rest.backdrop);
+  const theme: "dark" | "light" =
+    themeMode !== "auto" ? themeMode : (backdrop ? backdrop.dark : luminance < 0.48) ? "light" : "dark";
 
   useEffect(() => {
     onResolvedTheme?.(theme);

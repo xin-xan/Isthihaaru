@@ -1,9 +1,10 @@
 /**
  * In-browser product cut-out using the U²-Net (u2netp) model on onnxruntime-web.
- * The runtime and model are served from our own origin (public/ort, public/models), so it costs nothing per photo.
+ * The runtime and model are served with the app (public/ort, public/models), so it costs nothing per photo.
  */
 
-type Ort = typeof import("onnxruntime-web");
+import { loadOrt, type Ort } from "./ort-loader";
+
 type Session = import("onnxruntime-web").InferenceSession;
 
 const SIZE = 320;
@@ -14,12 +15,13 @@ let sessionPromise: Promise<{ ort: Ort; session: Session }> | null = null;
 
 function loadSession() {
   sessionPromise ??= (async () => {
-    // Loaded at runtime from public/ so the bundler never touches onnxruntime's wasm loader.
-    const ort: Ort = await import(/* webpackIgnore: true */ /* turbopackIgnore: true */ "/ort/ort.wasm.min.mjs" as string);
-    ort.env.wasm.wasmPaths = "/ort/";
+    const ort = await loadOrt();
     // Threads need cross-origin isolation headers; a single thread is fast enough for a 320px mask.
     ort.env.wasm.numThreads = 1;
-    const session = await ort.InferenceSession.create("/models/u2netp.onnx", { executionProviders: ["wasm"] });
+    const res = await fetch(new URL("models/u2netp.onnx", document.baseURI));
+    if (!res.ok) throw new Error(`Model download failed (${res.status})`);
+    const model = new Uint8Array(await res.arrayBuffer());
+    const session = await ort.InferenceSession.create(model, { executionProviders: ["wasm"] });
     return { ort, session };
   })().catch((err) => {
     sessionPromise = null;

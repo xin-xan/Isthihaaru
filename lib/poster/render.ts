@@ -1,4 +1,5 @@
 import type { AdCopy, BusinessProfile, FormatId, Lang, PriceInfo, TextSide } from "../types";
+import { findBackdrop, type ProductRect } from "./backdrops";
 import { CONTACT_ICONS, FEATURE_ICONS, drawIcon } from "./icons";
 
 /**
@@ -24,6 +25,8 @@ export interface PosterInput {
   cutout: HTMLImageElement | null;
   /** true when `scene` is an empty background plate that the cut-out should be placed on */
   hybrid: boolean;
+  /** id of a built-in scene from backdrops.ts; drawn instead of `scene` */
+  backdrop: string | null;
   placement: ProductPlacement;
   profile: BusinessProfile;
   copy: AdCopy;
@@ -228,6 +231,19 @@ export function renderPoster(canvas: HTMLCanvasElement, p: PosterInput) {
 }
 
 function drawBackground(ctx: CanvasRenderingContext2D, p: PosterInput, W: number, H: number, left: boolean, u: number) {
+  const backdrop = findBackdrop(p.backdrop);
+  if (backdrop) {
+    backdrop.draw(ctx, {
+      W,
+      H,
+      u,
+      left,
+      primary: p.profile.primaryColor || "#1B6B2F",
+      accent: p.profile.accentColor || "#7CB342",
+      product: productRect(p, W, H, left),
+    });
+    return;
+  }
   if (p.scene) {
     drawCover(ctx, p.scene, 0, 0, W, H);
     return;
@@ -290,11 +306,12 @@ function averageColor(img: HTMLImageElement): string {
 }
 
 /** Stands the cut-out product on the scene with contact + drop shadows and a light colour match. */
-function drawProduct(ctx: CanvasRenderingContext2D, p: PosterInput, W: number, H: number, left: boolean, u: number) {
-  const img = p.cutout!;
+/** Where the product stands; built-in scenes use it to put their pedestal under the product. */
+function productRect(p: PosterInput, W: number, H: number, left: boolean): ProductRect {
   const slot = PRODUCT_SLOT[p.format];
   const scale = Math.min(1.6, Math.max(0.4, p.placement.scale));
-  const aspect = img.width / img.height;
+  // Before the cut-out exists, assume a typical bottle/can shape.
+  const aspect = p.cutout ? p.cutout.width / p.cutout.height : 0.55;
   let h = slot.h * H * scale;
   let w = h * aspect;
   const maxW = slot.maxW * W * scale;
@@ -302,8 +319,12 @@ function drawProduct(ctx: CanvasRenderingContext2D, p: PosterInput, W: number, H
     w = maxW;
     h = w / aspect;
   }
-  const cx = (left ? slot.cx : 1 - slot.cx) * W;
-  const baseY = (slot.base - p.placement.lift) * H;
+  return { cx: (left ? slot.cx : 1 - slot.cx) * W, baseY: (slot.base - p.placement.lift) * H, w, h };
+}
+
+function drawProduct(ctx: CanvasRenderingContext2D, p: PosterInput, W: number, H: number, left: boolean, u: number) {
+  const img = p.cutout!;
+  const { cx, baseY, w, h } = productRect(p, W, H, left);
   const x = cx - w / 2;
   const y = baseY - h;
 

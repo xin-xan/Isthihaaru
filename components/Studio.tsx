@@ -1,14 +1,16 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Camera, Download, ImageUp, RefreshCw, Settings2, Share2, Sparkles, Store, Wand2 } from "lucide-react";
+import { Camera, Copy, Download, ImageUp, RefreshCw, Settings2, Share2, Shuffle, Sparkles, Store, Wand2, X } from "lucide-react";
 import CopyEditor from "./CopyEditor";
 import PosterPreview from "./PosterPreview";
 import ProfileDialog from "./ProfileDialog";
 import { Chip, Field, Section, Segmented, Spinner, TextArea, TextInput, Toggle } from "./ui";
-import { FORMATS, FORMAT_LIST } from "@/lib/formats";
 import { removeBackground } from "@/lib/bgremove";
+import { COPY_CATEGORIES, findCategory, templateCopy } from "@/lib/copybank";
+import { FORMATS, FORMAT_LIST } from "@/lib/formats";
 import { fileToDataUrl } from "@/lib/image";
+import { BACKDROPS } from "@/lib/poster/backdrops";
 import { DEFAULT_THAANA, type ProductPlacement } from "@/lib/poster/render";
 import { SCENE_PRESETS } from "@/lib/presets";
 import {
@@ -20,21 +22,13 @@ import {
   saveThaanaFont,
   type StoredFont,
 } from "@/lib/storage";
-import type { AdCopy, BusinessProfile, CopyResponse, FormatId, Lang, PriceInfo, SceneEngine, TextSide, ThemeMode } from "@/lib/types";
+import type { BusinessProfile, CopyResponse, FormatId, Lang, PriceInfo, SceneEngine, TextSide, ThemeMode } from "@/lib/types";
+import BackdropPicker from "./BackdropPicker";
 
+/** Set by scripts/build-static.mjs: no server, so only the built-in engine exists. */
+const STATIC_BUILD = process.env.NEXT_PUBLIC_STATIC_BUILD === "1";
 const CUSTOM_THAANA = "IsthihaaruThaana";
-
-const emptyCopy = (): AdCopy => ({
-  category: "",
-  name: "",
-  subtitle: "",
-  tagline: "",
-  features: [
-    { icon: "star", text: "" },
-    { icon: "check", text: "" },
-    { icon: "thumbsUp", text: "" },
-  ],
-});
+const EXAMPLE_PRODUCT = "examples/sample-product.webp";
 
 interface SceneEntry {
   url: string;
@@ -61,8 +55,6 @@ export default function Studio() {
   const [photo, setPhoto] = useState<string | null>(null);
   const [productName, setProductName] = useState("");
   const [details, setDetails] = useState("");
-  const [presetId, setPresetId] = useState("auto");
-  const [customScene, setCustomScene] = useState("");
 
   const [format, setFormat] = useState<FormatId>("portrait");
   const [lang, setLang] = useState<Lang>("en");
@@ -71,30 +63,40 @@ export default function Studio() {
   const [scrim, setScrim] = useState(true);
   const [price, setPrice] = useState<PriceInfo>({ show: false, currency: "MVR", price: "", oldPrice: "" });
 
-  const [engines, setEngines] = useState({ premium: true, free: true });
-  const [engine, setEngine] = useState<SceneEngine>("free");
-  const [notice, setNotice] = useState<string | null>(null);
+  // Scene engines: built-in canvas scenes (always), Cloudflare background ("free"), Gemini re-render ("premium").
+  const [engines, setEngines] = useState({ premium: false, free: false });
+  const [engine, setEngine] = useState<SceneEngine>("local");
+  const [backdropId, setBackdropId] = useState("natural");
+  const [backdropTouched, setBackdropTouched] = useState(false);
+  const [customBg, setCustomBg] = useState<string | null>(null);
+  const [presetId, setPresetId] = useState("auto");
+  const [customScene, setCustomScene] = useState("");
   const [scenes, setScenes] = useState<Partial<Record<FormatId, SceneEntry>>>({});
-  // Free mode: one empty background plate (works for every size) + the cut-out product placed on it.
   const [freeBg, setFreeBg] = useState<SceneEntry | null>(null);
   const [cutout, setCutout] = useState<{ photo: string; url: string } | null>(null);
   const [placement, setPlacement] = useState<ProductPlacement>({ scale: 1, lift: 0 });
-  const [sceneStatus, setSceneStatus] = useState("");
-  const [copy, setCopy] = useState<CopyResponse>({ en: emptyCopy(), dv: emptyCopy() });
-  const [hasCopy, setHasCopy] = useState(false);
+
+  const [category, setCategory] = useState("general");
+  const [variant, setVariant] = useState(0);
+  const [copy, setCopy] = useState<CopyResponse>(() => templateCopy("general", "", 0));
 
   const [busyScene, setBusyScene] = useState(false);
   const [busyCopy, setBusyCopy] = useState(false);
+  const [cutting, setCutting] = useState(false);
+  const [sceneStatus, setSceneStatus] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const [accessCode, setAccessCode] = useState("");
   const [needCode, setNeedCode] = useState(false);
   const [canShare, setCanShare] = useState(false);
+  const [exportUrl, setExportUrl] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
 
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const editorRef = useRef<HTMLDivElement | null>(null);
   const copyInFlight = useRef<Promise<CopyResponse | null> | null>(null);
 
-  // ---------- boot: profile, access code, fonts ----------
+  // ---------- boot: profile, access code, fonts, server engines ----------
   const applyFont = useCallback(async (font: StoredFont | null): Promise<string | null> => {
     if (!font) {
       setThaanaFont(null);
@@ -124,7 +126,7 @@ export default function Studio() {
       setProfileOpen(true);
     }
     setAccessCode(loadAccessCode());
-    setCanShare("share" in navigator);
+    setCanShare(!STATIC_BUILD && "share" in navigator);
     const font = loadThaanaFont();
     if (font) void applyFont(font);
 
@@ -141,13 +143,12 @@ export default function Studio() {
     ];
     Promise.allSettled(specs.map((s) => document.fonts.load(s, "Aa ދިވެހި"))).then(() => setFontsVersion((v) => v + 1));
 
-    fetch("/api/config")
-      .then((r) => r.json())
-      .then((c: { premium: boolean; free: boolean }) => {
-        setEngines(c);
-        if (!c.free && c.premium) setEngine("premium");
-      })
-      .catch(() => {});
+    if (!STATIC_BUILD) {
+      fetch("/api/config")
+        .then((r) => r.json())
+        .then((c: { premium: boolean; free: boolean }) => setEngines(c))
+        .catch(() => {});
+    }
   }, [applyFont]);
 
   // ---------- API ----------
@@ -167,6 +168,26 @@ export default function Studio() {
     setError(e instanceof Error ? e.message : "Something went wrong.");
   }
 
+  // ---------- product cut-out ----------
+  async function cutOut(src: string): Promise<string> {
+    if (cutout?.photo === src) return cutout.url;
+    setCutting(true);
+    try {
+      const url = await removeBackground(src);
+      setCutout({ photo: src, url });
+      return url;
+    } catch (e) {
+      console.error(e);
+      // Keep going with the photo as it is rather than blocking the whole poster.
+      setNotice("Couldn't remove the photo's background on this device, so the photo is used as it is. A photo on a plain background works best.");
+      setCutout({ photo: src, url: src });
+      return src;
+    } finally {
+      setCutting(false);
+    }
+  }
+
+  // ---------- AI engines (only when the server has keys) ----------
   async function makeScene(target: FormatId = format) {
     if (!photo) return;
     setBusyScene(true);
@@ -183,11 +204,11 @@ export default function Studio() {
       });
       setScenes((s) => ({ ...s, [target]: { url: dataUrl, side: textSide } }));
     } catch (e) {
-      if (e instanceof RequestError && e.code === "billing_required" && engines.free) {
-        setEngine("free");
-        setNotice("Premium scenes need Gemini billing, so we switched to Free mode.");
+      if (e instanceof RequestError && e.code === "billing_required") {
+        setEngine(engines.free ? "free" : "local");
+        setNotice(`AI scenes need Gemini billing, so we switched to ${engines.free ? "AI background" : "built-in scenes"}.`);
         setBusyScene(false);
-        return makeFreeScene();
+        return engines.free ? makeFreeScene() : undefined;
       }
       handleError(e);
     } finally {
@@ -195,21 +216,13 @@ export default function Studio() {
     }
   }
 
-  async function ensureCutout(src: string): Promise<string> {
-    if (cutout?.photo === src) return cutout.url;
-    const url = await removeBackground(src);
-    setCutout({ photo: src, url });
-    return url;
-  }
-
   async function makeFreeScene() {
     if (!photo) return;
     setBusyScene(true);
-    setSceneStatus("Cutting out your product…");
+    setSceneStatus("Creating the background…");
     setError(null);
     try {
-      const [, c] = await Promise.all([ensureCutout(photo), hasCopy ? Promise.resolve(copy) : makeCopy()]);
-      setSceneStatus("Creating the background…");
+      const [, c] = await Promise.all([cutOut(photo), engines.premium ? makeCopy() : Promise.resolve(null)]);
       const { dataUrl } = await post<{ dataUrl: string }>("/api/background", {
         format,
         presetId,
@@ -239,7 +252,6 @@ export default function Studio() {
     try {
       const res = await post<CopyResponse>("/api/copy", { image: photo, productName, details, businessName: profile.name });
       setCopy(res);
-      setHasCopy(true);
       return res;
     } catch (e) {
       handleError(e);
@@ -249,31 +261,57 @@ export default function Studio() {
     }
   }
 
-  async function createAd() {
+  async function createAi() {
     editorRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
     setNotice(null);
     if (engine === "free") await makeFreeScene();
-    else await Promise.all([makeScene(), hasCopy ? Promise.resolve() : makeCopy()]);
+    else await Promise.all([makeScene(), makeCopy()]);
+  }
+
+  // ---------- built-in text ----------
+  function applyTemplate(cat: string, v: number) {
+    const t = templateCopy(cat, "", v);
+    // Keep whatever product name the user already has.
+    setCopy((prev) => ({
+      en: { ...t.en, name: prev.en.name },
+      dv: { ...t.dv, name: prev.dv.name || prev.en.name },
+    }));
+  }
+
+  function chooseCategory(id: string) {
+    setCategory(id);
+    setVariant(0);
+    applyTemplate(id, 0);
+    if (!backdropTouched && !customBg) setBackdropId(findCategory(id).backdrop);
+  }
+
+  function shuffleText() {
+    const v = variant + 1;
+    setVariant(v);
+    applyTemplate(category, v);
   }
 
   async function onPhoto(file: File | undefined) {
     if (!file) return;
     setError(null);
+    setNotice(null);
     try {
       const url = await fileToDataUrl(file, { maxDim: 1536, type: "image/jpeg", quality: 0.9 });
       setPhoto(url);
       setScenes({});
       setFreeBg(null);
-      setCutout(null);
       setPlacement({ scale: 1, lift: 0 });
-      // Cut the product out straight away in free mode so the preview shows it while the user picks a scene.
-      if (engine === "free") {
-        removeBackground(url)
-          .then((cut) => setCutout({ photo: url, url: cut }))
-          .catch(() => {});
-      }
-      setHasCopy(false);
-      setCopy({ en: emptyCopy(), dv: emptyCopy() });
+      if (engine !== "premium") void cutOut(url);
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  }
+
+  async function onCustomBg(file: File | undefined) {
+    if (!file) return;
+    try {
+      setCustomBg(await fileToDataUrl(file, { maxDim: 2048, type: "image/jpeg", quality: 0.9 }));
+      setBackdropTouched(true);
     } catch (e) {
       setError((e as Error).message);
     }
@@ -310,20 +348,66 @@ export default function Studio() {
     } else void download();
   }
 
+  /** Shows the finished poster as an image the user can press-and-hold or right-click to save. */
+  async function openImage() {
+    const blob = await toBlob();
+    if (!blob) return;
+    setCopied(false);
+    setExportUrl(URL.createObjectURL(blob));
+  }
+
+  async function copyImage() {
+    try {
+      const blob = await toBlob();
+      if (!blob) return;
+      await navigator.clipboard.write([new ClipboardItem({ "image/png": blob })]);
+      setCopied(true);
+    } catch {
+      setNotice("This browser can't copy images. Press and hold the image (or right-click it) and choose Save.");
+    }
+  }
+
+  function closeImage() {
+    if (exportUrl) URL.revokeObjectURL(exportUrl);
+    setExportUrl(null);
+  }
+
   // ---------- derived ----------
-  const free = engine === "free";
-  const sceneEntry = free ? freeBg : (scenes[format] ?? Object.values(scenes)[0] ?? null);
-  const sceneForOtherSize = !free && !!sceneEntry && !scenes[format];
-  const sceneSideMismatch = !free && !!scenes[format] && scenes[format]!.side !== textSide;
-  const cutoutUrl = free && cutout?.photo === photo ? cutout.url : null;
-  const busy = busyScene || busyCopy;
-  const started = !!sceneEntry || hasCopy || busy;
+  const aiEngines = engines.free || engines.premium;
+  const usingAiScene = engine === "premium";
+  const hybrid = engine !== "premium";
+  const effectivePhoto = photo ?? EXAMPLE_PRODUCT;
+  const sceneEntry =
+    engine === "premium" ? (scenes[format] ?? Object.values(scenes)[0] ?? null) : engine === "free" ? freeBg : customBg ? { url: customBg, side: textSide } : null;
+  const backdrop = engine === "local" && !customBg ? backdropId : null;
+  const cutoutUrl = !hybrid ? null : photo ? (cutout?.photo === photo ? cutout.url : null) : EXAMPLE_PRODUCT;
+  const sceneForOtherSize = usingAiScene && !!sceneEntry && !scenes[format];
+  const sceneSideMismatch = usingAiScene && !!scenes[format] && scenes[format]!.side !== textSide;
+  const busy = busyScene || busyCopy || cutting;
+  const busyLabel = cutting ? "Cutting out your product…" : busyScene ? sceneStatus : "Writing your ad copy…";
 
   function changeLang(l: Lang) {
     setLang(l);
     // Dhivehi reads right-to-left, so default its text block to the right side.
-    if (!sceneEntry) setTextSide(l === "dv" ? "right" : "left");
+    if (!usingAiScene || !sceneEntry) setTextSide(l === "dv" ? "right" : "left");
   }
+
+  const exportButtons = STATIC_BUILD ? (
+    <button type="button" onClick={openImage} className="flex flex-1 items-center justify-center gap-2 rounded-xl bg-brand-700 py-3 font-bold text-white hover:bg-brand-900">
+      <Download className="size-5" /> Save image
+    </button>
+  ) : (
+    <>
+      <button type="button" onClick={download} className="flex flex-1 items-center justify-center gap-2 rounded-xl bg-brand-700 py-3 font-bold text-white hover:bg-brand-900">
+        <Download className="size-5" /> Download PNG
+      </button>
+      {canShare && (
+        <button type="button" onClick={share} className="flex flex-1 items-center justify-center gap-2 rounded-xl bg-white px-5 py-3 font-bold shadow-sm ring-1 ring-black/10">
+          <Share2 className="size-5" /> Share
+        </button>
+      )}
+    </>
+  );
 
   return (
     <div className="mx-auto max-w-6xl px-4 pb-28 pt-4 sm:pb-10">
@@ -332,7 +416,7 @@ export default function Studio() {
         <div className="flex size-10 items-center justify-center rounded-xl bg-brand-700 text-white">
           <Sparkles className="size-5" />
         </div>
-        <div className="flex-1">
+        <div className="min-w-0 flex-1">
           <h1 className="text-lg font-extrabold leading-tight">Isthihaaru</h1>
           <p className="text-xs text-neutral-500">
             Professional ad posts in seconds · <span className="thaana">އިސްތިހާރު</span>
@@ -360,9 +444,10 @@ export default function Studio() {
             <PosterPreview
               canvasRef={canvasRef}
               sceneUrl={sceneEntry?.url ?? null}
-              photoUrl={photo}
+              photoUrl={usingAiScene ? photo : effectivePhoto}
               cutoutUrl={cutoutUrl}
-              hybrid={free}
+              hybrid={hybrid}
+              backdrop={backdrop}
               placement={placement}
               themeMode={themeMode}
               fontsVersion={fontsVersion}
@@ -378,14 +463,12 @@ export default function Studio() {
             {busy && (
               <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 rounded-2xl bg-white/60 backdrop-blur-sm">
                 <Spinner className="size-8 text-brand-700" />
-                <p className="text-sm font-semibold text-brand-900">
-                  {busyScene ? sceneStatus : "Writing your ad copy…"}
-                </p>
+                <p className="text-sm font-semibold text-brand-900">{busyLabel}</p>
               </div>
             )}
-            {!photo && (
-              <div className="pointer-events-none absolute inset-x-0 bottom-1/3 text-center text-sm font-semibold text-neutral-500">
-                Upload a product photo to start
+            {!photo && !busy && (
+              <div className="pointer-events-none absolute left-3 top-3 rounded-full bg-black/60 px-3 py-1 text-xs font-semibold text-white">
+                Example product · add your own photo
               </div>
             )}
           </div>
@@ -403,23 +486,11 @@ export default function Studio() {
             </div>
           )}
 
-          {/* Export (desktop) */}
-          {started && (
-            <div className="mx-auto mt-4 hidden max-w-xl gap-3 sm:flex">
-              <button type="button" onClick={download} className="flex flex-1 items-center justify-center gap-2 rounded-xl bg-brand-700 py-3 font-bold text-white hover:bg-brand-900">
-                <Download className="size-5" /> Download PNG
-              </button>
-              {canShare && (
-                <button type="button" onClick={share} className="flex items-center justify-center gap-2 rounded-xl bg-white px-5 py-3 font-bold shadow-sm ring-1 ring-black/10">
-                  <Share2 className="size-5" /> Share
-                </button>
-              )}
-            </div>
-          )}
+          <div className="mx-auto mt-4 hidden max-w-xl gap-3 sm:flex">{exportButtons}</div>
         </div>
 
         {/* Controls */}
-        <div className="space-y-4">
+        <div className="min-w-0 space-y-4">
           {notice && <div className="rounded-xl bg-sky-50 px-4 py-3 text-sm text-sky-900 ring-1 ring-sky-200">{notice}</div>}
           {error && (
             <div className="rounded-xl bg-red-50 px-4 py-3 text-sm text-red-800 ring-1 ring-red-200">
@@ -434,7 +505,7 @@ export default function Studio() {
                     setError(null);
                   }}
                 >
-                  <TextInput value={accessCode} onChange={(e) => setAccessCode(e.target.value)} placeholder="Access code" className="bg-white" />
+                  <TextInput id="access-code" value={accessCode} onChange={(e) => setAccessCode(e.target.value)} placeholder="Access code" className="bg-white" />
                   <button className="rounded-xl bg-red-700 px-4 font-semibold text-white">Save</button>
                 </form>
               )}
@@ -447,78 +518,80 @@ export default function Studio() {
                 {/* eslint-disable-next-line @next/next/no-img-element */}
                 <img src={photo} alt="Product" className="size-20 rounded-xl object-cover ring-1 ring-black/10" />
                 <div className="flex flex-1 flex-wrap gap-2">
-                  <PhotoButton capture onFile={onPhoto} small>
+                  <PhotoButton id="photo-retake" capture onFile={onPhoto} small>
                     <Camera className="size-4" /> Retake
                   </PhotoButton>
-                  <PhotoButton onFile={onPhoto} small>
+                  <PhotoButton id="photo-change" onFile={onPhoto} small>
                     <ImageUp className="size-4" /> Change
                   </PhotoButton>
                 </div>
               </div>
             ) : (
               <div className="grid grid-cols-2 gap-3">
-                <PhotoButton capture onFile={onPhoto}>
+                <PhotoButton id="photo-camera" capture onFile={onPhoto}>
                   <Camera className="size-7" /> Take photo
                 </PhotoButton>
-                <PhotoButton onFile={onPhoto}>
+                <PhotoButton id="photo-gallery" onFile={onPhoto}>
                   <ImageUp className="size-7" /> From gallery
                 </PhotoButton>
               </div>
             )}
-            <details className="group mt-3">
-              <summary className="cursor-pointer text-sm font-semibold text-brand-700">Help the AI (optional)</summary>
-              <div className="mt-3 space-y-3">
-                <Field label="Product name">
-                  <TextInput value={productName} onChange={(e) => setProductName(e.target.value)} placeholder="e.g. Shark Energy Drink 250ml" />
-                </Field>
-                <Field label="Anything to mention?">
-                  <TextArea value={details} onChange={(e) => setDetails(e.target.value)} placeholder="e.g. New stock, best served cold, available in all branches" />
-                </Field>
-              </div>
-            </details>
+            <p className="mt-2 text-xs text-neutral-500">The background is removed on your phone. Nothing is uploaded.</p>
           </Section>
 
           <Section step={2} title="Scene & size">
-            <div className="mb-3">
-              <Segmented
-                value={engine}
-                onChange={(v) => {
-                  setEngine(v);
-                  setNotice(null);
-                  if (v === "free" && photo && cutout?.photo !== photo) {
-                    removeBackground(photo)
-                      .then((cut) => setCutout({ photo, url: cut }))
-                      .catch(() => {});
-                  }
+            {aiEngines && (
+              <div className="mb-3">
+                <Segmented
+                  value={engine}
+                  onChange={(v) => {
+                    setEngine(v);
+                    setNotice(null);
+                    if (v !== "premium" && photo) void cutOut(photo);
+                  }}
+                  options={[
+                    { value: "local" as SceneEngine, label: "Built-in" },
+                    ...(engines.free ? [{ value: "free" as SceneEngine, label: "AI background" }] : []),
+                    ...(engines.premium ? [{ value: "premium" as SceneEngine, label: "AI scene" }] : []),
+                  ]}
+                />
+              </div>
+            )}
+
+            {engine === "local" ? (
+              <BackdropPicker
+                selected={customBg ? "custom" : backdropId}
+                customBg={customBg}
+                profile={profile}
+                left={textSide === "left"}
+                onSelect={(id) => {
+                  setBackdropId(id);
+                  setCustomBg(null);
+                  setBackdropTouched(true);
                 }}
-                options={[
-                  { value: "free", label: "Free" },
-                  { value: "premium", label: "Premium" },
-                ]}
+                onCustom={onCustomBg}
               />
-              <p className="mt-1.5 text-xs text-neutral-500">
-                {free
-                  ? "Your product is cut out on this device and placed on an AI-made background. The label stays exactly as photographed."
-                  : "Gemini re-renders the whole photo with matching light and reflections. Needs Gemini billing."}
-              </p>
-              {free && !engines.free && (
-                <p className="mt-1.5 text-xs font-semibold text-amber-700">Free mode isn&apos;t set up on the server yet (Cloudflare keys missing).</p>
-              )}
-              {!free && !engines.premium && (
-                <p className="mt-1.5 text-xs font-semibold text-amber-700">Premium mode isn&apos;t set up on the server yet (Gemini key missing).</p>
-              )}
-            </div>
-            <div className="flex flex-wrap gap-2">
-              {SCENE_PRESETS.map((p) => (
-                <Chip key={p.id} active={presetId === p.id && !customScene.trim()} onClick={() => (setPresetId(p.id), setCustomScene(""))}>
-                  <span className="mr-1">{p.emoji}</span>
-                  {p.label}
-                </Chip>
-              ))}
-            </div>
-            <div className="mt-3">
-              <TextInput value={customScene} onChange={(e) => setCustomScene(e.target.value)} placeholder="Or describe a scene: on a wooden table with coconuts…" />
-            </div>
+            ) : (
+              <>
+                <p className="mb-2 text-xs text-neutral-500">
+                  {engine === "free"
+                    ? "Your product is cut out on this device and placed on an AI-made background."
+                    : "AI re-renders the whole photo with matching light and reflections."}
+                </p>
+                <div className="flex flex-wrap gap-2">
+                  {SCENE_PRESETS.map((p) => (
+                    <Chip key={p.id} active={presetId === p.id && !customScene.trim()} onClick={() => (setPresetId(p.id), setCustomScene(""))}>
+                      <span className="mr-1">{p.emoji}</span>
+                      {p.label}
+                    </Chip>
+                  ))}
+                </div>
+                <div className="mt-3">
+                  <TextInput id="custom-scene" value={customScene} onChange={(e) => setCustomScene(e.target.value)} placeholder="Or describe a scene: on a wooden table with coconuts…" />
+                </div>
+              </>
+            )}
+
             <div className="mt-4 grid grid-cols-4 gap-2">
               {FORMAT_LIST.map((f) => (
                 <button
@@ -538,31 +611,49 @@ export default function Studio() {
                 </button>
               ))}
             </div>
-            <button
-              type="button"
-              disabled={!photo || busy}
-              onClick={createAd}
-              className="mt-4 flex w-full items-center justify-center gap-2 rounded-xl bg-brand-700 py-3.5 text-base font-bold text-white shadow-lg shadow-brand-700/20 transition hover:bg-brand-900 disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              {busy ? <Spinner className="size-5" /> : <Wand2 className="size-5" />}
-              {sceneEntry ? (free ? "New background" : "Create new scene") : "Create my ad"}
-            </button>
+
+            {engine !== "local" && (
+              <button
+                type="button"
+                disabled={!photo || busy}
+                onClick={createAi}
+                className="mt-4 flex w-full items-center justify-center gap-2 rounded-xl bg-brand-700 py-3.5 text-base font-bold text-white shadow-lg shadow-brand-700/20 transition hover:bg-brand-900 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {busy ? <Spinner className="size-5" /> : <Wand2 className="size-5" />}
+                {sceneEntry ? "Make another" : "Create with AI"}
+              </button>
+            )}
           </Section>
 
           <Section
             step={3}
             title="Text"
             right={
-              <button
-                type="button"
-                disabled={!photo || busyCopy}
-                onClick={makeCopy}
-                className="flex items-center gap-1 rounded-lg px-2 py-1 text-xs font-semibold text-brand-700 hover:bg-brand-50 disabled:opacity-40"
-              >
-                {busyCopy ? <Spinner className="size-3.5" /> : <RefreshCw className="size-3.5" />} {hasCopy ? "Rewrite" : "Write with AI"}
-              </button>
+              engines.premium ? (
+                <button
+                  type="button"
+                  disabled={!photo || busyCopy}
+                  onClick={() => void makeCopy()}
+                  className="flex items-center gap-1 rounded-lg px-2 py-1 text-xs font-semibold text-brand-700 hover:bg-brand-50 disabled:opacity-40"
+                >
+                  {busyCopy ? <Spinner className="size-3.5" /> : <RefreshCw className="size-3.5" />} Write with AI
+                </button>
+              ) : undefined
             }
           >
+            <div className="mb-3">
+              <span className="mb-1.5 block text-xs font-semibold text-neutral-600">What are you selling?</span>
+              <div className="flex flex-wrap gap-1.5">
+                {COPY_CATEGORIES.map((c) => (
+                  <Chip key={c.id} active={category === c.id} onClick={() => chooseCategory(c.id)} className="px-2.5 py-1 text-xs">
+                    {lang === "dv" ? <span className="thaana">{c.label.dv}</span> : c.label.en}
+                  </Chip>
+                ))}
+              </div>
+              <button type="button" onClick={shuffleText} className="mt-2 flex items-center gap-1 text-xs font-semibold text-brand-700">
+                <Shuffle className="size-3.5" /> Try other wording
+              </button>
+            </div>
             <div className="mb-3">
               <Segmented
                 value={lang}
@@ -574,19 +665,28 @@ export default function Studio() {
               />
             </div>
             <CopyEditor copy={copy[lang]} lang={lang} onChange={(c) => setCopy((prev) => ({ ...prev, [lang]: c }))} />
+            {engines.premium && (
+              <details className="mt-3">
+                <summary className="cursor-pointer text-xs font-semibold text-brand-700">Notes for the AI (optional)</summary>
+                <div className="mt-2 space-y-2">
+                  <TextInput id="ai-product-name" value={productName} onChange={(e) => setProductName(e.target.value)} placeholder="Product name, e.g. Shark Energy Drink 250ml" />
+                  <TextArea id="ai-details" value={details} onChange={(e) => setDetails(e.target.value)} placeholder="e.g. New stock, best served cold" />
+                </div>
+              </details>
+            )}
 
             <div className="mt-4 rounded-xl bg-neutral-50 p-3">
               <Toggle checked={price.show} onChange={(v) => setPrice((p) => ({ ...p, show: v }))} label={<span className="font-semibold">Show price badge</span>} />
               {price.show && (
                 <div className="mt-3 grid grid-cols-3 gap-2">
                   <Field label="Currency">
-                    <TextInput value={price.currency} onChange={(e) => setPrice((p) => ({ ...p, currency: e.target.value }))} />
+                    <TextInput id="price-currency" value={price.currency} onChange={(e) => setPrice((p) => ({ ...p, currency: e.target.value }))} />
                   </Field>
                   <Field label="Price">
-                    <TextInput inputMode="decimal" value={price.price} onChange={(e) => setPrice((p) => ({ ...p, price: e.target.value }))} placeholder="15" />
+                    <TextInput id="price-now" inputMode="decimal" value={price.price} onChange={(e) => setPrice((p) => ({ ...p, price: e.target.value }))} placeholder="15" />
                   </Field>
                   <Field label="Old price">
-                    <TextInput inputMode="decimal" value={price.oldPrice} onChange={(e) => setPrice((p) => ({ ...p, oldPrice: e.target.value }))} placeholder="20" />
+                    <TextInput id="price-old" inputMode="decimal" value={price.oldPrice} onChange={(e) => setPrice((p) => ({ ...p, oldPrice: e.target.value }))} placeholder="20" />
                   </Field>
                 </div>
               )}
@@ -617,10 +717,11 @@ export default function Studio() {
                 />
               </Field>
               <Toggle checked={scrim} onChange={setScrim} label="Soft backdrop behind text" />
-              {cutoutUrl && (
+              {hybrid && (
                 <div className="space-y-3 rounded-xl bg-neutral-50 p-3">
                   <Field label="Product size">
                     <input
+                      id="product-size"
                       type="range"
                       min={0.6}
                       max={1.4}
@@ -632,6 +733,7 @@ export default function Studio() {
                   </Field>
                   <Field label="Product height">
                     <input
+                      id="product-height"
                       type="range"
                       min={-0.08}
                       max={0.3}
@@ -652,16 +754,28 @@ export default function Studio() {
       </div>
 
       {/* Export (mobile) */}
-      {started && (
-        <div className="fixed inset-x-0 bottom-0 z-40 flex gap-3 border-t border-black/5 bg-white/95 px-4 py-3 backdrop-blur sm:hidden">
-          <button type="button" onClick={download} className="flex flex-1 items-center justify-center gap-2 rounded-xl bg-brand-700 py-3 font-bold text-white">
-            <Download className="size-5" /> Save
-          </button>
-          {canShare && (
-            <button type="button" onClick={share} className="flex flex-1 items-center justify-center gap-2 rounded-xl bg-neutral-100 py-3 font-bold">
-              <Share2 className="size-5" /> Share
+      <div
+        className="fixed inset-x-0 bottom-0 z-40 flex gap-3 border-t border-black/5 bg-white/95 px-4 pt-3 backdrop-blur sm:hidden"
+        style={{ paddingBottom: "calc(0.75rem + env(safe-area-inset-bottom, 0px))" }}
+      >
+        {exportButtons}
+      </div>
+
+      {exportUrl && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4" role="dialog" aria-modal="true" aria-label="Save your poster">
+          <div className="flex max-h-full w-full max-w-lg flex-col gap-3 rounded-2xl bg-white p-4">
+            <div className="flex items-center gap-2">
+              <p className="flex-1 text-sm font-semibold">Press and hold the image (or right-click it) and choose Save.</p>
+              <button type="button" onClick={closeImage} className="rounded-full p-2 hover:bg-neutral-100" aria-label="Close">
+                <X className="size-5" />
+              </button>
+            </div>
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img src={exportUrl} alt="Your finished poster" className="min-h-0 w-full flex-1 rounded-xl object-contain" />
+            <button type="button" onClick={copyImage} className="flex items-center justify-center gap-2 rounded-xl bg-neutral-100 py-2.5 text-sm font-semibold hover:bg-neutral-200">
+              <Copy className="size-4" /> {copied ? "Copied. Paste it into Viber, WhatsApp or Instagram" : "Copy image"}
             </button>
-          )}
+          </div>
         </div>
       )}
 
@@ -687,11 +801,13 @@ export default function Studio() {
 }
 
 function PhotoButton({
+  id,
   capture,
   onFile,
   children,
   small,
 }: {
+  id: string;
   capture?: boolean;
   onFile: (f: File | undefined) => void;
   children: React.ReactNode;
@@ -707,6 +823,7 @@ function PhotoButton({
     >
       {children}
       <input
+        id={id}
         type="file"
         accept="image/*"
         capture={capture ? "environment" : undefined}
@@ -719,3 +836,4 @@ function PhotoButton({
     </label>
   );
 }
+

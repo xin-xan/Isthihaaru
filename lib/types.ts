@@ -107,4 +107,4 @@ export interface CopyResponse {
   sceneIdea?: string;
 }
 
-export type SceneEngine = "free" | "premium";
+export type SceneEngine = "local" | "free" | "premium";
