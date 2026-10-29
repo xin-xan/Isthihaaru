@@ -25,6 +25,15 @@ import {
 import type { BusinessProfile, CopyResponse, FormatId, Lang, PriceInfo, SceneEngine, TextSide, ThemeMode } from "@/lib/types";
 import BackdropPicker from "./BackdropPicker";
 
+declare global {
+  interface Window {
+    /** Present only when the page runs inside a claude.ai artifact viewer. */
+    claude?: {
+      use?: (name: "downloads") => Promise<{ save(r: { filename: string; data: Blob }): Promise<{ status: string }> } | null>;
+    };
+  }
+}
+
 /** Set by scripts/build-static.mjs: no server, so only the built-in engine exists. */
 const STATIC_BUILD = process.env.NEXT_PUBLIC_STATIC_BUILD === "1";
 const CUSTOM_THAANA = "IsthihaaruThaana";
@@ -327,12 +336,26 @@ export default function Studio() {
   async function download() {
     const blob = await toBlob();
     if (!blob) return;
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = fileName();
-    a.click();
-    setTimeout(() => URL.revokeObjectURL(url), 2000);
+    // Compared inline (not via STATIC_BUILD) so bundlers drop the unused branch.
+    if (process.env.NEXT_PUBLIC_STATIC_BUILD === "1") {
+      // Inside a claude.ai artifact the page can't download directly; the viewer's
+      // downloads capability asks the user to confirm the save instead.
+      const downloads = await window.claude?.use?.("downloads").catch(() => null);
+      if (!downloads) return void openImage();
+      try {
+        await downloads.save({ filename: fileName(), data: blob });
+      } catch (e) {
+        const code = (e as { code?: string }).code;
+        if (code !== "declined" && code !== "rate_limited") openImage();
+      }
+    } else {
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = fileName();
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 2000);
+    }
   }
 
   async function share() {
@@ -393,9 +416,14 @@ export default function Studio() {
   }
 
   const exportButtons = STATIC_BUILD ? (
-    <button type="button" onClick={openImage} className="flex flex-1 items-center justify-center gap-2 rounded-xl bg-brand-700 py-3 font-bold text-white hover:bg-brand-900">
-      <Download className="size-5" /> Save image
-    </button>
+    <>
+      <button type="button" onClick={download} className="flex flex-1 items-center justify-center gap-2 rounded-xl bg-brand-700 py-3 font-bold text-white hover:bg-brand-900">
+        <Download className="size-5" /> Save image
+      </button>
+      <button type="button" onClick={openImage} className="flex flex-1 items-center justify-center gap-2 rounded-xl bg-white px-4 py-3 font-bold shadow-sm ring-1 ring-black/10">
+        <Copy className="size-5" /> Copy or view
+      </button>
+    </>
   ) : (
     <>
       <button type="button" onClick={download} className="flex flex-1 items-center justify-center gap-2 rounded-xl bg-brand-700 py-3 font-bold text-white hover:bg-brand-900">

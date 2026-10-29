@@ -3,7 +3,7 @@
  * The runtime and model are served with the app (public/ort, public/models), so it costs nothing per photo.
  */
 
-import { loadOrt, type Ort } from "./ort-loader";
+import { loadModel, loadOrt, type Ort } from "./ort-loader";
 
 type Session = import("onnxruntime-web").InferenceSession;
 
@@ -18,9 +18,7 @@ function loadSession() {
     const ort = await loadOrt();
     // Threads need cross-origin isolation headers; a single thread is fast enough for a 320px mask.
     ort.env.wasm.numThreads = 1;
-    const res = await fetch(new URL("models/u2netp.onnx", document.baseURI));
-    if (!res.ok) throw new Error(`Model download failed (${res.status})`);
-    const model = new Uint8Array(await res.arrayBuffer());
+    const model = await loadModel();
     const session = await ort.InferenceSession.create(model, { executionProviders: ["wasm"] });
     return { ort, session };
   })().catch((err) => {

@@ -82,7 +82,8 @@ writeFileSync(join(out, "index.html"), page);
 // Local preview needs a full document; the artifact host adds this skeleton itself.
 writeFileSync(join(out, "preview.html"), `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"></head><body>${page}</body></html>`);
 
-copyFileSync(join(root, "public/models/u2netp.onnx"), join(out, "models/u2netp.onnx"));
+// Base64 text: static hosts such as claude.ai artifacts only serve web file types.
+writeFileSync(join(out, "models/u2netp.txt"), readFileSync(join(root, "public/models/u2netp.onnx")).toString("base64"));
 copyFileSync(join(root, "node_modules/onnxruntime-web/dist/ort-wasm-simd-threaded.wasm"), join(out, "ort-wasm-simd-threaded.wasm"));
 copyFileSync(join(root, "public/examples/sample-product.webp"), join(out, "examples/sample-product.webp"));
 console.log(`Static build written to dist/ (page ${(page.length / 1024).toFixed(0)} KB)`);

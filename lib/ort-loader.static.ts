@@ -14,3 +14,13 @@ export async function loadOrt(): Promise<Ort> {
   }
   return ort;
 }
+
+/** The static host only serves web file types, so the model ships base64-encoded as text. */
+export async function loadModel(): Promise<Uint8Array> {
+  const res = await fetch(new URL("models/u2netp.txt", document.baseURI));
+  if (!res.ok) throw new Error(`Model download failed (${res.status})`);
+  const bin = atob((await res.text()).trim());
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return bytes;
+}
