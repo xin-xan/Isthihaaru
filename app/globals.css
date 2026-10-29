@@ -1,0 +1,50 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Montserrat", ui-sans-serif, system-ui, sans-serif;
+  --font-thaana: "IsthihaaruThaana", "Noto Sans Thaana", "Montserrat", sans-serif;
+  --color-brand-50: #f0f7ee;
+  --color-brand-100: #dcefd6;
+  --color-brand-500: #3f8f3a;
+  --color-brand-600: #2c7a2f;
+  --color-brand-700: #1b6b2f;
+  --color-brand-900: #0f3d1c;
+}
+
+:root {
+  color-scheme: light;
+}
+
+body {
+  background: #f6f5f1;
+  color: #1c1c1c;
+}
+
+.thaana,
+[dir="rtl"] {
+  font-family: var(--font-thaana);
+}
+
+/* Thaana glyphs run small next to Latin text at the same size */
+.thaana {
+  font-size: 1.15em;
+}
+input[dir="rtl"],
+textarea[dir="rtl"] {
+  font-size: 1.05rem;
+}
+
+input[type="color"] {
+  -webkit-appearance: none;
+  appearance: none;
+  border: none;
+  padding: 0;
+  background: none;
+}
+input[type="color"]::-webkit-color-swatch-wrapper {
+  padding: 0;
+}
+input[type="color"]::-webkit-color-swatch {
+  border: none;
+  border-radius: 9999px;
+}
