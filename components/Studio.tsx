@@ -6,7 +6,7 @@ import CopyEditor from "./CopyEditor";
 import PosterPreview from "./PosterPreview";
 import ProfileDialog from "./ProfileDialog";
 import { Chip, Field, Section, Segmented, Spinner, TextArea, TextInput, Toggle } from "./ui";
-import { removeBackground } from "@/lib/bgremove";
+import { cutOutProduct } from "@/lib/bgremove";
 import { COPY_CATEGORIES, findCategory, templateCopy } from "@/lib/copybank";
 import { FORMATS, FORMAT_LIST } from "@/lib/formats";
 import { fileToDataUrl } from "@/lib/image";
@@ -82,7 +82,7 @@ export default function Studio() {
   const [customScene, setCustomScene] = useState("");
   const [scenes, setScenes] = useState<Partial<Record<FormatId, SceneEntry>>>({});
   const [freeBg, setFreeBg] = useState<SceneEntry | null>(null);
-  const [cutout, setCutout] = useState<{ photo: string; url: string } | null>(null);
+  const [cutout, setCutout] = useState<{ photo: string; url: string; stage: "quick" | "best" } | null>(null);
   const [placement, setPlacement] = useState<ProductPlacement>({ scale: 1, lift: 0 });
 
   const [category, setCategory] = useState("general");
@@ -92,6 +92,8 @@ export default function Studio() {
   const [busyScene, setBusyScene] = useState(false);
   const [busyCopy, setBusyCopy] = useState(false);
   const [cutting, setCutting] = useState(false);
+  const [improving, setImproving] = useState(false);
+  const [bestCutout, setBestCutout] = useState(true);
   const [sceneStatus, setSceneStatus] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -135,6 +137,11 @@ export default function Studio() {
       setProfileOpen(true);
     }
     setAccessCode(loadAccessCode());
+    try {
+      if (window.localStorage.getItem("isthihaaru.bestCutout") === "0") setBestCutout(false);
+    } catch {
+      /* storage unavailable */
+    }
     setCanShare(!STATIC_BUILD && "share" in navigator);
     const font = loadThaanaFont();
     if (font) void applyFont(font);
@@ -178,22 +185,34 @@ export default function Studio() {
   }
 
   // ---------- product cut-out ----------
-  async function cutOut(src: string): Promise<string> {
-    if (cutout?.photo === src) return cutout.url;
+  /** Resolves with the quick cut-out; the best-quality one replaces it in state when ready. */
+  function cutOut(src: string, best = bestCutout): Promise<string> {
+    if (cutout?.photo === src && (cutout.stage === "best" || !best)) return Promise.resolve(cutout.url);
     setCutting(true);
-    try {
-      const url = await removeBackground(src);
-      setCutout({ photo: src, url });
-      return url;
-    } catch (e) {
-      console.error(e);
-      // Keep going with the photo as it is rather than blocking the whole poster.
-      setNotice("Couldn't remove the photo's background on this device, so the photo is used as it is. A photo on a plain background works best.");
-      setCutout({ photo: src, url: src });
-      return src;
-    } finally {
-      setCutting(false);
-    }
+    setImproving(false);
+    return new Promise((resolve) => {
+      void cutOutProduct(src, {
+        best,
+        onResult(stage, url) {
+          setCutout({ photo: src, url, stage });
+          if (stage === "quick") {
+            setCutting(false);
+            resolve(url);
+          } else setImproving(false);
+        },
+        onImproving: () => setImproving(true),
+        onError(message, stage) {
+          console.error(message);
+          setImproving(false);
+          if (stage === "best") return; // keep the quick result
+          setCutting(false);
+          // Keep going with the photo as it is rather than blocking the whole poster.
+          setNotice(`${message.startsWith("Couldn't find") ? message : "Couldn't remove the photo's background on this device."} The photo is used as it is for now.`);
+          setCutout({ photo: src, url: src, stage: "quick" });
+          resolve(src);
+        },
+      });
+    });
   }
 
   // ---------- AI engines (only when the server has keys) ----------
@@ -494,6 +513,11 @@ export default function Studio() {
                 <p className="text-sm font-semibold text-brand-900">{busyLabel}</p>
               </div>
             )}
+            {improving && !busy && (
+              <div className="pointer-events-none absolute right-3 top-3 flex items-center gap-2 rounded-full bg-black/60 px-3 py-1 text-xs font-semibold text-white">
+                <Spinner className="size-3" /> Improving cut-out…
+              </div>
+            )}
             {!photo && !busy && (
               <div className="pointer-events-none absolute left-3 top-3 rounded-full bg-black/60 px-3 py-1 text-xs font-semibold text-white">
                 Example product · add your own photo
@@ -564,6 +588,26 @@ export default function Studio() {
                 </PhotoButton>
               </div>
             )}
+            <div className="mt-3">
+              <Toggle
+                checked={bestCutout}
+                onChange={(v) => {
+                  setBestCutout(v);
+                  try {
+                    window.localStorage.setItem("isthihaaru.bestCutout", v ? "1" : "0");
+                  } catch {
+                    /* storage unavailable */
+                  }
+                  if (v && photo && engine !== "premium") void cutOut(photo, true);
+                }}
+                label={
+                  <span>
+                    <span className="font-semibold">Best-quality cut-out</span>
+                    <span className="block text-xs text-neutral-500">Cleaner edges. Downloads 46 MB once, then takes 10–30 s per photo.</span>
+                  </span>
+                }
+              />
+            </div>
             <p className="mt-2 text-xs text-neutral-500">The background is removed on your phone. Nothing is uploaded.</p>
           </Section>
 

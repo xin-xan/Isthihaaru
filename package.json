@@ -8,7 +8,9 @@
     "start": "next start",
     "lint": "tsc --noEmit",
     "postinstall": "node scripts/copy-ort.mjs",
-    "build:static": "node scripts/build-static.mjs"
+    "build:static": "node scripts/build-static.mjs",
+    "predev": "node scripts/build-worker.mjs public/bg-worker.js",
+    "prebuild": "node scripts/build-worker.mjs public/bg-worker.js"
   },
   "dependencies": {
     "@google/genai": "^2.32.0",

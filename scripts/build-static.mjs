@@ -6,6 +6,7 @@ import { copyFileSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "no
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import * as esbuild from "esbuild";
+import { buildWorker } from "./build-worker.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const out = join(root, "dist");
@@ -33,10 +34,8 @@ export const Fragment = R.Fragment;`,
       const g = args.path.startsWith("react-dom") ? "ReactDOM" : "React";
       return { contents: `module.exports = window.${g};`, loader: "js" };
     });
-    // Use the bundled onnxruntime build instead of loading it from /ort at runtime.
-    build.onResolve({ filter: /\/ort-loader$/ }, (args) =>
-      args.importer.includes("ort-loader") ? undefined : { path: join(root, "lib/ort-loader.static.ts") },
-    );
+    // Relative asset paths and base64 models for static hosting.
+    build.onResolve({ filter: /\/segment\/assets$/ }, () => ({ path: join(root, "lib/segment/assets.static.ts") }));
   },
 };
 
@@ -82,8 +81,19 @@ writeFileSync(join(out, "index.html"), page);
 // Local preview needs a full document; the artifact host adds this skeleton itself.
 writeFileSync(join(out, "preview.html"), `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"></head><body>${page}</body></html>`);
 
-// Base64 text: static hosts such as claude.ai artifacts only serve web file types.
+// Base64 text: static hosts such as claude.ai artifacts only serve web file types (and cap file sizes),
+// so the larger model is split into parts listed in a small JSON manifest.
 writeFileSync(join(out, "models/u2netp.txt"), readFileSync(join(root, "public/models/u2netp.onnx")).toString("base64"));
+const isnet = readFileSync(join(root, "public/models/isnet-int8.onnx")).toString("base64");
+const PART = 12 * 1024 * 1024;
+const parts = [];
+for (let i = 0; i * PART < isnet.length; i++) {
+  const name = `models/isnet-int8.part${i + 1}.txt`;
+  writeFileSync(join(out, name), isnet.slice(i * PART, (i + 1) * PART));
+  parts.push(name);
+}
+writeFileSync(join(out, "models/isnet-int8.json"), JSON.stringify({ parts }));
+await buildWorker(join(out, "bg-worker.js"));
 copyFileSync(join(root, "node_modules/onnxruntime-web/dist/ort-wasm-simd-threaded.wasm"), join(out, "ort-wasm-simd-threaded.wasm"));
 copyFileSync(join(root, "public/examples/sample-product.webp"), join(out, "examples/sample-product.webp"));
 console.log(`Static build written to dist/ (page ${(page.length / 1024).toFixed(0)} KB)`);

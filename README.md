@@ -14,7 +14,7 @@ The layout follows [`samples/sample-ad.png`](samples/sample-ad.png).
 
 By default the app needs **no API keys and no server**:
 
-- **Background removal** runs on the phone (U²-Net model).
+- **Background removal** runs on the phone, in a background worker so the page never freezes. A quick pass (U²-Net, about 2 s) shows a cut-out right away. A **best-quality pass** (ISNet, downloaded once, 46 MB) then replaces it with cleaner edges. Both passes look again at a tight crop around the product, drop leftover background blobs, fill small holes, and snap edges to the photo with a guided filter. Users can switch the best pass off.
 - **Scenes** come from 12 built-in canvas-drawn sets: Natural light, Studio, Brand colours, Pastel, Luxury, Beach, Ice cold, Wooden table, Tropical green, Sunset, Ramadan / Eid and Clean white. Users can also upload their own background photo. The pedestal is always drawn under the product.
 - **Text** comes from ready-made English and Dhivehi lines for 11 product categories, with "Try other wording" to cycle through them. Everything stays editable.
 
@@ -36,7 +36,7 @@ Users switch engines in step 2. If Premium is chosen and the key has no billing,
 
 ## How it works
 
-- `lib/bgremove.ts`: runs the cut-out model with onnxruntime-web. The runtime is copied to `public/ort` by `npm install` (`postinstall`).
+- `lib/bgremove.ts` and `lib/segment/`: the two-pass cut-out in a Web Worker (onnxruntime-web). `npm install` copies the WebAssembly runtime to `public/ort`; `npm run dev` and `npm run build` bundle the worker to `public/bg-worker.js`. The models and their licences are listed in `public/models/README.md`.
 - `app/api/background`: asks Cloudflare Workers AI for an empty set to place the product on.
 - `app/api/scene`: sends the photo to a **Gemini image model** with a prompt that keeps the product identical, removes the background, builds the chosen scene and leaves calm space on the text side. No text is baked into the image.
 - `app/api/copy`: asks a **Gemini text model** for structured JSON copy in English and Dhivehi.
